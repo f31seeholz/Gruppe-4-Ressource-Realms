@@ -1,5 +1,7 @@
 # Projektmodul Prozesse: Gruppe 4 Ressource Realms
 
+Dieses Repository ist öffentlich zugänglich, aber ausschließlich für die Jury des Deutschen Multimediapreises bestimmt. Verbreitung ohne ausdrückliche Zustimmung ist untersagt.    
+
 **Projekt zum ersten Mal starten (nach Download/Klonen)**
 1. Stelle sicher, dass Node.js (empfohlen: Version 18+) installiert ist. [Download Node.js](https://nodejs.org/)
 2. Ordner in Visual Studio Code öffnen zu code Ordner navigieren (Windows cd .\code o. cd code; Linux/macOS cd ./code)
@@ -48,4 +50,3 @@ Das Spiel umfasst unteranderem folgende Features:
 - **Gitlab** - Zur Versionenverwaltung und Zusammenarbeit
 - **GitHub Copilot & ChatGPT** - Zur Unterstützung der Implementierung
 
-Dieses Projekt ist ein visuelles Konzept, das als Grundlage für eine interaktive Version dienen kann. Beiträge und Ideen zur Weiterentwicklung sind herzlich willkommen! 🚀
