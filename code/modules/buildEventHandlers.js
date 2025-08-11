@@ -1,0 +1,193 @@
+import * as THREE from 'three';
+import { placeBuildingMesh, placeRoadMesh } from './gamePieces.js';
+import { isBuildEnabled } from './uiBuild.js';
+import { showBuildPopupFeedback } from './uiBuild.js';
+import { getPlacementWarning } from './buildLogic.js';
+
+// Build-Event-Handler für das Bauen von Siedlungen und Städten
+// Kapselt die Click-Logik für das Spielfeld
+
+export function setupBuildEventHandler({
+  renderer,
+  scene,
+  camera,
+  tileMeshes,
+  players, // original array (will be treated as reference), but we prefer window.players if available
+  getBuildMode,
+  getActivePlayerIdx,
+  tryBuildSettlement,
+  tryBuildCity,
+  tryBuildRoad,
+  getCornerWorldPosition,
+  updateAllUI // now includes player overviews and achievement display
+}) {
+  // Track delayed build timeouts (warnings) globally so undo can cancel them
+  if (!window._pendingBuildTimeouts) window._pendingBuildTimeouts = [];
+  function registerBuildTimeout(fn, delay) {
+    const id = setTimeout(() => {
+      try { fn(); } finally {
+        // remove id from list
+        window._pendingBuildTimeouts = window._pendingBuildTimeouts.filter(x => x !== id);
+      }
+    }, delay);
+    window._pendingBuildTimeouts.push(id);
+  }
+  function onBoardClick(event) {
+  // suppressed verbose click log
+    // Only if menu is hidden
+    const menu = document.getElementById('main-menu');
+    if (menu && menu.style.display !== 'none') return;
+    // Nur bauen, wenn Bauen aktiviert ist
+    if (!isBuildEnabled()) return;
+    // Raycast to find nearest tile and corner
+    const mouse = new THREE.Vector2();
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const hexGroup = scene.getObjectByName('HexGroup');
+    if (!hexGroup) return;
+    const intersects = raycaster.intersectObjects(hexGroup.children, true);
+    if (intersects.length === 0) return;
+    const intersect = intersects[0];
+    // Find which tile was clicked
+    let tileMesh = intersect.object;
+    while (tileMesh && !tileMesh.name.endsWith('.glb')) tileMesh = tileMesh.parent;
+    if (!tileMesh) return;
+    // Parse tile axial coordinates from tileMeshes
+    let tileKey = null;
+    for (const [key, mesh] of Object.entries(tileMeshes)) {
+      if (mesh === tileMesh) { tileKey = key; break; }
+    }
+    if (!tileKey) return;
+    const [q, r] = tileKey.split(',').map(Number);
+    // Find nearest corner
+    const corners = [];
+    for (let i = 0; i < 6; i++) {
+      const pos = getCornerWorldPosition(q, r, i);
+      corners.push({ i, pos });
+    }
+    let minDist = Infinity, nearest = 0;
+    for (let i = 0; i < 6; i++) {
+      const d = corners[i].pos.distanceTo(intersect.point);
+      if (d < minDist) { minDist = d; nearest = i; }
+    }
+    // Only allow if close enough (e.g. <1.5 units)
+    if (minDist > 1.5) return;
+    // Try to build
+  const livePlayers = window.players || players;
+  const playerId = getActivePlayerIdx();
+  const player = livePlayers[playerId];
+    let result;
+    let meshPlaced = false;
+    
+    if (getBuildMode() === 'settlement') {
+      // Check for placement warning before building
+  const warning = getPlacementWarning(playerId, livePlayers, 'settlements', q, r, nearest);
+      if (warning) {
+        showBuildPopupFeedback(warning.message, 'warning');
+        // Give user a moment to see the warning, then proceed
+        registerBuildTimeout(() => {
+          result = tryBuildSettlement(player, q, r, nearest, livePlayers);
+          if (result.success) {
+            placeBuildingMesh(scene, getCornerWorldPosition, q, r, nearest, 'settlement', player.color);
+            meshPlaced = true;
+            showBuildPopupFeedback('Siedlung gebaut', 'success');
+          } else {
+            showBuildPopupFeedback(result.reason, 'error');
+          }
+          if (meshPlaced) updateAllUI();
+        }, 1500);
+        return; // Exit early to show warning
+      } else {
+        // No warning, proceed immediately
+  result = tryBuildSettlement(player, q, r, nearest, livePlayers);
+        if (result.success) {
+          placeBuildingMesh(scene, getCornerWorldPosition, q, r, nearest, 'settlement', player.color);
+          meshPlaced = true;
+        }
+      }
+    } else if (getBuildMode() === 'city') {
+      result = tryBuildCity(player, q, r, nearest);
+      if (result.success) {
+        placeBuildingMesh(scene, getCornerWorldPosition, q, r, nearest, 'city', player.color);
+        meshPlaced = true;
+      }
+    } else if (getBuildMode() === 'road') {
+      // Für Straßenbau: Kante (edge) statt Ecke bestimmen
+      // Finde die nächste Kante (edge) zur Klickposition
+      let minEdgeDist = Infinity, nearestEdge = 0;
+      for (let edge = 0; edge < 6; edge++) {
+        // Mittelpunkt der Kante zwischen zwei Ecken
+        const a = getCornerWorldPosition(q, r, edge);
+        const b = getCornerWorldPosition(q, r, (edge + 1) % 6);
+        const mid = a.clone().add(b).multiplyScalar(0.5);
+        const d = mid.distanceTo(intersect.point);
+        if (d < minEdgeDist) { minEdgeDist = d; nearestEdge = edge; }
+      }
+      if (minEdgeDist > 1.5) return;
+      // tryBuildRoad benötigt: player, q, r, edge, allPlayers
+      let ignoreResourceRule = false;
+      if (window._roadBuildingMode && window._roadBuildingMode.player === player && window._roadBuildingMode.roadsLeft > 0) {
+        ignoreResourceRule = true;
+      }
+      if (typeof tryBuildRoad === 'function') {
+        // Check for placement warning before building roads
+    const warning = getPlacementWarning(playerId, livePlayers, 'roads', q, r, null, nearestEdge);
+        if (warning) {
+          showBuildPopupFeedback(warning.message, 'warning');
+          // Give user a moment to see the warning, then proceed
+          registerBuildTimeout(() => {
+            result = tryBuildRoad(player, q, r, nearestEdge, livePlayers, { ignoreResourceRule });
+            if (result.success) {
+              placeRoadMesh(scene, getCornerWorldPosition, q, r, nearestEdge, player.color);
+              meshPlaced = true;
+              showBuildPopupFeedback('Straße gebaut', 'success');
+              if (ignoreResourceRule && window._roadBuildingMode && window._roadBuildingMode.player === player) {
+                window._roadBuildingMode.roadsLeft--;
+                if (window._roadBuildingMode.roadsLeft <= 0) {
+                  if (typeof window._roadBuildingMode.finish === 'function') window._roadBuildingMode.finish();
+                }
+              }
+            } else {
+              showBuildPopupFeedback(result.reason, 'error');
+            }
+            if (meshPlaced) updateAllUI();
+          }, 1500);
+          return; // Exit early to show warning
+        } else {
+          // No warning, proceed immediately
+          result = tryBuildRoad(player, q, r, nearestEdge, livePlayers, { ignoreResourceRule });
+          if (result.success) {
+            placeRoadMesh(scene, getCornerWorldPosition, q, r, nearestEdge, player.color);
+            meshPlaced = true;
+            // Straßenbau-Modus: Zähler runterzählen und ggf. beenden
+            if (ignoreResourceRule && window._roadBuildingMode && window._roadBuildingMode.player === player) {
+              window._roadBuildingMode.roadsLeft--;
+              if (window._roadBuildingMode.roadsLeft <= 0) {
+                if (typeof window._roadBuildingMode.finish === 'function') window._roadBuildingMode.finish();
+              }
+            }
+          }
+        }
+      } else {
+        result = { success: false, reason: 'Straßenbau nicht implementiert' };
+      }
+    } else {
+      result = { success: false, reason: 'Unbekannter Build-Modus' };
+    }
+    // === Feedback-Timeout robust machen ===
+    if (window._buildFeedbackTimeout) {
+      clearTimeout(window._buildFeedbackTimeout);
+      window._buildFeedbackTimeout = null;
+    }
+    if (!result.success) {
+      showBuildPopupFeedback(result.reason || 'Bau nicht möglich', false);
+      return;
+    }
+    showBuildPopupFeedback('Gebaut!', true);
+    // UI aktualisieren, wenn gebaut wurde (inklusive Achievements)
+    if (meshPlaced) updateAllUI();
+  }
+  renderer.domElement.addEventListener('click', onBoardClick, false);
+}
